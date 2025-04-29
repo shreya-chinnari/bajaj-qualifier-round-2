@@ -8,6 +8,9 @@ const nextConfig: NextConfig = {
   eslint: {
     ignoreDuringBuilds: true,
   },
+   env: {
+    NEXT_PUBLIC_API_BASE_URL: process.env.API_BASE_URL || 'https://dynamic-form-generator-9rl7.onrender.com',
+  },
   images: {
     remotePatterns: [
       {
