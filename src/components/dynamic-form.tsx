@@ -60,17 +60,17 @@ const buildSchema = (sections: FormSection[]) => {
         case 'date':
            // Validate format YYYY-MM-DD first
            fieldSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, { message: field.validation?.message || 'Invalid date format (YYYY-MM-DD)'});
-           // Add refinement to check if the date is in the past (less than today)
+           // Add refinement to check if the date is not in the future (less than or equal to today)
            fieldSchema = fieldSchema.refine(dateStr => {
               try {
                 const inputDate = new Date(dateStr);
                  // Add timezone offset to avoid issues across different timezones
                 const adjustedInputDate = new Date(inputDate.getTime() + inputDate.getTimezoneOffset() * 60000);
-                return !isNaN(adjustedInputDate.getTime()) && adjustedInputDate < today;
+                return !isNaN(adjustedInputDate.getTime()) && adjustedInputDate <= today; // Allow today's date
               } catch (e) {
                 return false; // Invalid date string
               }
-           }, { message: field.validation?.message || `${field.label} must be a date before today` });
+           }, { message: field.validation?.message || `${field.label} cannot be a future date` });
            break;
         case 'dropdown':
         case 'radio':
@@ -100,7 +100,7 @@ const buildSchema = (sections: FormSection[]) => {
           // Check if the string schema is already refined (like date) or has min length 1
            // Avoid adding min(1) if already handled by regex or other minLength
            // This check might be too simple, refine if needed
-           if (!(fieldSchema as any)._def.checks?.some(c => c.kind === 'min' && c.value === 1) && !(fieldSchema as any)._def.checks?.some(c => c.kind === 'regex')) {
+           if (!(fieldSchema as any)._def.checks?.some(c => c.kind === 'min' && c.value >= 1) && !(fieldSchema as any)._def.checks?.some(c => c.kind === 'regex')) {
              fieldSchema = fieldSchema.min(1, { message: field.validation?.message || `${field.label} is required` });
             }
         } else {
@@ -185,7 +185,7 @@ export function DynamicForm({ formStructure }: DynamicFormProps) {
     }
   };
 
- const onSubmit = async (data: z.infer<typeof validationSchema>) => {
+ const onSubmit = async () => {
     // Trigger validation for the entire form one last time
     const allFields = formStructure.sections.flatMap(s => s.fields.map(f => f.fieldId)) as (keyof z.infer<typeof validationSchema>)[];
     const isFormValid = await form.trigger(allFields);
@@ -216,7 +216,8 @@ export function DynamicForm({ formStructure }: DynamicFormProps) {
       return; // Stop submission if validation fails
     }
 
-    // If validation passes
+    // If validation passes, get the form data
+    const data = form.getValues();
     console.log('Form submitted successfully!');
     console.log('Collected Form Data:', data);
 
@@ -224,7 +225,7 @@ export function DynamicForm({ formStructure }: DynamicFormProps) {
     toast({
       title: "Success!",
       description: "Form submitted successfully!",
-      variant: "default",
+      variant: "default", // Or use a success variant if defined
     });
 
     // Reset the form fields to their default values
@@ -260,7 +261,7 @@ export function DynamicForm({ formStructure }: DynamicFormProps) {
                 {field.type === 'email' && <Input type="email" id={field.fieldId} placeholder={field.placeholder} {...RHFfield} data-testid={field.dataTestId} />}
                 {field.type === 'tel' && <Input type="tel" id={field.fieldId} placeholder={field.placeholder} {...RHFfield} data-testid={field.dataTestId} />}
                 {field.type === 'textarea' && <Textarea id={field.fieldId} placeholder={field.placeholder} {...RHFfield} data-testid={field.dataTestId} />}
-                {field.type === 'date' && <Input type="date" id={field.fieldId} {...RHFfield} data-testid={field.dataTestId} max={format(new Date(), 'yyyy-MM-dd') /* Optionally set max date in input */} />}
+                {field.type === 'date' && <Input type="date" id={field.fieldId} {...RHFfield} data-testid={field.dataTestId} max={format(new Date(), 'yyyy-MM-dd')} />}
                 {field.type === 'dropdown' && (
                   <Select onValueChange={RHFfield.onChange} value={RHFfield.value || ''} defaultValue={RHFfield.value || ''}>
                     <SelectTrigger id={field.fieldId} data-testid={field.dataTestId}>
@@ -328,7 +329,8 @@ export function DynamicForm({ formStructure }: DynamicFormProps) {
   return (
     <Card ref={formRef} className="w-full max-w-2xl mx-auto shadow-xl">
        <CardHeader>
-        <CardTitle className="text-2xl font-bold mb-2">{formStructure.formTitle} (v{formStructure.version})</CardTitle>
+        {/* Removed version number */}
+        <CardTitle className="text-2xl font-bold mb-2">{formStructure.formTitle}</CardTitle>
          <Progress value={progressValue} className="w-full h-2 mb-4" />
          <p className="text-sm text-muted-foreground text-center">{`Section ${currentSectionIndex + 1} of ${totalSections}`}</p>
          <Separator className="my-4" />
@@ -349,9 +351,9 @@ export function DynamicForm({ formStructure }: DynamicFormProps) {
 
               {isLastSection ? (
                 // Use a regular button, handle submit logic in its onClick
-                <Button type="button" onClick={onSubmit} className="bg-accent hover:bg-accent/90">Submit</Button>
+                <Button type="button" onClick={onSubmit} className="bg-accent hover:bg-accent/90 text-accent-foreground">Submit</Button>
               ) : (
-                <Button type="button" onClick={handleNext} className="bg-accent hover:bg-accent/90">
+                <Button type="button" onClick={handleNext} className="bg-accent hover:bg-accent/90 text-accent-foreground">
                   Next
                 </Button>
               )}
