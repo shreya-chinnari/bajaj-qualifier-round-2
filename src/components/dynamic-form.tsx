@@ -1,7 +1,7 @@
 'use client';
 
-import React, { useState, useMemo } from 'react';
-import { useForm, Controller, useWatch } from 'react-hook-form';
+import React, { useState, useMemo, useRef } from 'react';
+import { useForm, Controller } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import * as z from 'zod';
 
@@ -17,6 +17,7 @@ import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle }
 import { Form as UIForm, FormControl, FormDescription as UIFormDescription, FormField, FormItem, FormLabel, FormMessage } from '@/components/ui/form';
 import { Separator } from '@/components/ui/separator';
 import { Progress } from '@/components/ui/progress';
+import { useToast } from "@/hooks/use-toast"; // Import useToast
 
 interface DynamicFormProps {
   formStructure: Form;
@@ -104,6 +105,8 @@ const buildSchema = (sections: FormSection[]) => {
 
 export function DynamicForm({ formStructure }: DynamicFormProps) {
   const [currentSectionIndex, setCurrentSectionIndex] = useState(0);
+  const { toast } = useToast(); // Initialize toast
+  const formRef = useRef<HTMLDivElement>(null); // Ref for scrolling
   const totalSections = formStructure.sections.length;
   const currentSection = formStructure.sections[currentSectionIndex];
   const isLastSection = currentSectionIndex === totalSections - 1;
@@ -111,19 +114,22 @@ export function DynamicForm({ formStructure }: DynamicFormProps) {
    // Memoize the schema to avoid rebuilding on every render
   const validationSchema = useMemo(() => buildSchema(formStructure.sections), [formStructure.sections]);
 
+  // Helper to generate default values
+   const generateDefaultValues = () => {
+    const defaults = {};
+    formStructure.sections.forEach(section => {
+      section.fields.forEach(field => {
+        defaults[field.fieldId] = field.type === 'checkbox' ? false : ''; // Initialize checkboxes to false, others to empty string
+      });
+    });
+    return defaults;
+   };
+
 
   const form = useForm<z.infer<typeof validationSchema>>({
     resolver: zodResolver(validationSchema),
     mode: 'onChange', // Validate on change for immediate feedback
-     defaultValues: useMemo(() => {
-      const defaults = {};
-      formStructure.sections.forEach(section => {
-        section.fields.forEach(field => {
-          defaults[field.fieldId] = field.type === 'checkbox' ? false : ''; // Initialize checkboxes to false
-        });
-      });
-      return defaults;
-    }, [formStructure]),
+    defaultValues: useMemo(generateDefaultValues, [formStructure]), // Use memoized default values
   });
 
   const handleNext = async () => {
@@ -135,6 +141,10 @@ export function DynamicForm({ formStructure }: DynamicFormProps) {
 
     if (isValid && currentSectionIndex < totalSections - 1) {
       setCurrentSectionIndex(currentSectionIndex + 1);
+       // Scroll to top of form card when moving to next section
+       if (formRef.current) {
+        formRef.current.scrollIntoView({ behavior: 'smooth' });
+       }
     } else if (!isValid) {
         console.log("Section invalid, cannot proceed.", form.formState.errors);
         // Errors should automatically display due to RHF state
@@ -144,15 +154,37 @@ export function DynamicForm({ formStructure }: DynamicFormProps) {
   const handlePrev = () => {
     if (currentSectionIndex > 0) {
       setCurrentSectionIndex(currentSectionIndex - 1);
+      // Scroll to top of form card when moving to previous section
+      if (formRef.current) {
+        formRef.current.scrollIntoView({ behavior: 'smooth' });
+       }
     }
   };
 
   const onSubmit = (data: z.infer<typeof validationSchema>) => {
-     // Final validation before submission (optional, as sections are validated on next)
+     // Final validation is implicitly handled by react-hook-form's handleSubmit
      console.log('Form submitted successfully!');
      console.log('Collected Form Data:', data);
-     // Here you would typically send the data to an API endpoint
-     alert('Form submitted successfully! Check the console for data.');
+
+     // Show success toast
+     toast({
+        title: "Success!",
+        description: "Form submitted successfully!",
+        variant: "default", // or 'success' if you have that variant
+     });
+
+     // Reset the form fields to their default values
+     form.reset(generateDefaultValues());
+
+     // Reset to the first section
+     setCurrentSectionIndex(0);
+
+      // Scroll to the top of the page/form
+      if (formRef.current) {
+        formRef.current.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      } else {
+         window.scrollTo({ top: 0, behavior: 'smooth' });
+      }
   };
 
    const renderField = (field: FormFieldType, control) => {
@@ -175,7 +207,7 @@ export function DynamicForm({ formStructure }: DynamicFormProps) {
                 {field.type === 'textarea' && <Textarea id={field.fieldId} placeholder={field.placeholder} {...RHFfield} data-testid={field.dataTestId} />}
                 {field.type === 'date' && <Input type="date" id={field.fieldId} {...RHFfield} data-testid={field.dataTestId} />}
                 {field.type === 'dropdown' && (
-                  <Select onValueChange={RHFfield.onChange} defaultValue={RHFfield.value}>
+                  <Select onValueChange={RHFfield.onChange} value={RHFfield.value || ''} defaultValue={RHFfield.value || ''}>
                     <SelectTrigger id={field.fieldId} data-testid={field.dataTestId}>
                       <SelectValue placeholder={field.placeholder || 'Select an option'} />
                     </SelectTrigger>
@@ -191,7 +223,8 @@ export function DynamicForm({ formStructure }: DynamicFormProps) {
                 {field.type === 'radio' && (
                     <RadioGroup
                         onValueChange={RHFfield.onChange}
-                        defaultValue={RHFfield.value}
+                        value={RHFfield.value || ''}
+                        defaultValue={RHFfield.value || ''}
                         className="flex flex-col space-y-1"
                         id={field.fieldId}
                          data-testid={field.dataTestId}
@@ -209,26 +242,21 @@ export function DynamicForm({ formStructure }: DynamicFormProps) {
                     </RadioGroup>
                 )}
                  {field.type === 'checkbox' && (
-                    // Assuming single checkbox based on schema logic
-                     <div className="flex items-center space-x-2">
+                     <div className="flex items-center space-x-2 pt-2"> {/* Added pt-2 for alignment */}
                       <Checkbox
                         id={field.fieldId}
-                        checked={RHFfield.value}
+                        checked={!!RHFfield.value} // Ensure value is treated as boolean
                         onCheckedChange={RHFfield.onChange}
                         data-testid={field.dataTestId}
                         />
-                        {/* Label moved outside to avoid nesting interactive elements, linked by htmlFor */}
-                        <Label htmlFor={field.fieldId} className="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70">
-                             {/* We remove the label text from here as it's rendered by FormLabel above */}
-                        </Label>
+                        {/* Label is handled by FormLabel above, this is for the checkbox itself */}
                     </div>
-                    // If checkbox group: iterate options and render multiple checkboxes under the same field name (value would be array)
                  )}
               </>
             </FormControl>
             {field.placeholder && field.type !== 'radio' && field.type !== 'checkbox' && field.type !== 'dropdown' && (
                <UIFormDescription>
-                   {/* This might be redundant if placeholder is used, adjust as needed */}
+                  {/* Display placeholder as description only if needed, RHF handles input placeholder */}
                </UIFormDescription>
             )}
             <FormMessage />
@@ -243,7 +271,7 @@ export function DynamicForm({ formStructure }: DynamicFormProps) {
 
 
   return (
-    <Card className="w-full max-w-2xl mx-auto shadow-xl">
+    <Card ref={formRef} className="w-full max-w-2xl mx-auto shadow-xl">
        <CardHeader>
         <CardTitle className="text-2xl font-bold mb-2">{formStructure.formTitle} (v{formStructure.version})</CardTitle>
          <Progress value={progressValue} className="w-full h-2 mb-4" />
@@ -254,26 +282,30 @@ export function DynamicForm({ formStructure }: DynamicFormProps) {
       </CardHeader>
       <CardContent>
         <UIForm {...form}>
-          <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-6">
+          {/* Use a div instead of form tag here, trigger submit via button */}
+          <div className="space-y-6">
             {currentSection.fields.map(field => renderField(field, form.control))}
 
-            {/* Footer is outside the form fields mapping but inside the <form> */}
+            {/* Footer is outside the form fields mapping */}
             <CardFooter className="flex justify-between mt-8 pt-6 border-t">
               <Button type="button" variant="outline" onClick={handlePrev} disabled={currentSectionIndex === 0}>
                 Previous
               </Button>
 
               {isLastSection ? (
-                <Button type="submit" className="bg-accent hover:bg-accent/90">Submit</Button>
+                // Use form.handleSubmit here for the submit button
+                <Button type="button" onClick={form.handleSubmit(onSubmit)} className="bg-accent hover:bg-accent/90">Submit</Button>
               ) : (
                 <Button type="button" onClick={handleNext} className="bg-accent hover:bg-accent/90">
                   Next
                 </Button>
               )}
             </CardFooter>
-          </form>
+          </div>
         </UIForm>
       </CardContent>
     </Card>
   );
 }
+
+    
