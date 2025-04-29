@@ -1,3 +1,4 @@
+
 'use client';
 
 import React, { useState, useMemo, useRef } from 'react';
@@ -63,8 +64,10 @@ const buildSchema = (sections: FormSection[]) => {
            // Add refinement to check if the date is not in the future (less than or equal to today)
            fieldSchema = fieldSchema.refine(dateStr => {
               try {
+                // Check if date string is valid before creating Date object
+                if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) return false;
                 const inputDate = new Date(dateStr);
-                 // Add timezone offset to avoid issues across different timezones
+                // Add timezone offset to avoid issues across different timezones when comparing with startOfDay(new Date())
                 const adjustedInputDate = new Date(inputDate.getTime() + inputDate.getTimezoneOffset() * 60000);
                 return !isNaN(adjustedInputDate.getTime()) && adjustedInputDate <= today; // Allow today's date
               } catch (e) {
@@ -86,7 +89,7 @@ const buildSchema = (sections: FormSection[]) => {
               fieldSchema = fieldSchema.refine(val => val === true, { message: field.validation?.message || `${field.label} is required` });
             } else {
                 // Optional checkbox doesn't need specific validation beyond being boolean
-                fieldSchema = fieldSchema.optional();
+                fieldSchema = fieldSchema.optional().default(false); // Default to false for optional checkboxes
             }
            break;
 
@@ -97,21 +100,19 @@ const buildSchema = (sections: FormSection[]) => {
       // Add required validation if not checkbox (checkbox handles required differently)
       if (field.required && field.type !== 'checkbox') {
         if (fieldSchema instanceof z.ZodString) {
-          // Check if the string schema is already refined (like date) or has min length 1
-           // Avoid adding min(1) if already handled by regex or other minLength
-           // This check might be too simple, refine if needed
-           if (!(fieldSchema as any)._def.checks?.some(c => c.kind === 'min' && c.value >= 1) && !(fieldSchema as any)._def.checks?.some(c => c.kind === 'regex')) {
-             fieldSchema = fieldSchema.min(1, { message: field.validation?.message || `${field.label} is required` });
-            }
+            // For string types, ensure it's not empty if required
+            fieldSchema = fieldSchema.min(1, { message: field.validation?.message || `${field.label} is required` });
         } else {
-           // For non-string types that are required
+           // For non-string types that are required (e.g., potentially future numeric types)
           fieldSchema = fieldSchema.refine(val => val !== null && val !== undefined && val !== '', {
                message: field.validation?.message || `${field.label} is required`,
             });
         }
       } else if (!field.required && field.type !== 'checkbox') {
-        // Make non-required fields optional
-         fieldSchema = fieldSchema.optional();
+        // Make non-required fields optional, unless they already are (like date with refine)
+         if (!fieldSchema._def.typeName.includes('Optional')) {
+            fieldSchema = fieldSchema.optional();
+         }
       }
 
 
@@ -151,6 +152,14 @@ export function DynamicForm({ formStructure }: DynamicFormProps) {
     defaultValues: useMemo(generateDefaultValues, [formStructure]), // Use memoized default values
   });
 
+   // Watch all form values - useful for debugging
+   // const watchedValues = form.watch();
+   // useEffect(() => {
+   //   console.log("Form values changed:", watchedValues);
+   //   console.log("Form errors:", form.formState.errors);
+   // }, [watchedValues, form.formState.errors]);
+
+
   const handleNext = async () => {
     // Trigger validation only for fields in the current section
     const fieldsToValidate = currentSection.fields.map(f => f.fieldId) as (keyof z.infer<typeof validationSchema>)[];
@@ -187,8 +196,8 @@ export function DynamicForm({ formStructure }: DynamicFormProps) {
 
  const onSubmit = async () => {
     // Trigger validation for the entire form one last time
-    const allFields = formStructure.sections.flatMap(s => s.fields.map(f => f.fieldId)) as (keyof z.infer<typeof validationSchema>)[];
-    const isFormValid = await form.trigger(allFields);
+    // It's often better to validate all fields on submit, even if section validation passed previously
+    const isFormValid = await form.trigger(); // Validate all fields
 
     if (!isFormValid) {
       console.log('Final validation failed. Errors:', form.formState.errors);
@@ -207,11 +216,16 @@ export function DynamicForm({ formStructure }: DynamicFormProps) {
           break;
         }
       }
+      // If an error exists in a previous section, navigate there
       if (firstErrorSectionIndex !== -1 && firstErrorSectionIndex !== currentSectionIndex) {
          setCurrentSectionIndex(firstErrorSectionIndex);
          if (formRef.current) {
-            formRef.current.scrollIntoView({ behavior: 'smooth' });
+            // Slight delay to ensure state update before scrolling
+            setTimeout(() => formRef.current?.scrollIntoView({ behavior: 'smooth' }), 0);
          }
+      } else if (formRef.current) {
+         // If error is in current section, just scroll to top of card
+         formRef.current.scrollIntoView({ behavior: 'smooth' });
       }
       return; // Stop submission if validation fails
     }
@@ -225,7 +239,7 @@ export function DynamicForm({ formStructure }: DynamicFormProps) {
     toast({
       title: "Success!",
       description: "Form submitted successfully!",
-      variant: "default", // Or use a success variant if defined
+      variant: "default", // Use default style for success
     });
 
     // Reset the form fields to their default values
@@ -256,7 +270,8 @@ export function DynamicForm({ formStructure }: DynamicFormProps) {
               {field.label} {field.required && <span className="text-destructive">*</span>}
             </FormLabel>
             <FormControl>
-              <>
+              {/* Replace React.Fragment with a div to accept the id prop */}
+              <div>
                 {field.type === 'text' && <Input id={field.fieldId} placeholder={field.placeholder} {...RHFfield} data-testid={field.dataTestId} />}
                 {field.type === 'email' && <Input type="email" id={field.fieldId} placeholder={field.placeholder} {...RHFfield} data-testid={field.dataTestId} />}
                 {field.type === 'tel' && <Input type="tel" id={field.fieldId} placeholder={field.placeholder} {...RHFfield} data-testid={field.dataTestId} />}
@@ -298,21 +313,25 @@ export function DynamicForm({ formStructure }: DynamicFormProps) {
                     </RadioGroup>
                 )}
                  {field.type === 'checkbox' && (
-                     <div className="flex items-center space-x-2 pt-2"> {/* Added pt-2 for alignment */}
+                     <div className="flex items-start space-x-2 pt-2"> {/* Use items-start for better alignment */}
                       <Checkbox
                         id={field.fieldId}
                         checked={!!RHFfield.value} // Ensure value is treated as boolean
-                        onCheckedChange={RHFfield.onChange}
+                        onCheckedChange={(checked) => {
+                            RHFfield.onChange(checked); // Pass the boolean directly
+                        }}
                         data-testid={field.dataTestId}
                         />
-                        {/* Label is handled by FormLabel above, this is for the checkbox itself */}
+                        {/* The main label is handled by FormLabel above.
+                            If a specific label text is needed *only* next to the checkbox,
+                            add it here, but usually the FormLabel is sufficient. */}
                     </div>
                  )}
-              </>
+              </div>
             </FormControl>
             {field.placeholder && field.type !== 'radio' && field.type !== 'checkbox' && field.type !== 'dropdown' && (
                <UIFormDescription>
-                  {/* Display placeholder as description only if needed, RHF handles input placeholder */}
+                  {/* Placeholder is handled by the input itself */}
                </UIFormDescription>
             )}
             <FormMessage />
