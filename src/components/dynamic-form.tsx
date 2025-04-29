@@ -4,6 +4,7 @@ import React, { useState, useMemo, useRef } from 'react';
 import { useForm, Controller } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import * as z from 'zod';
+import { format, startOfDay } from 'date-fns'; // Import date-fns function
 
 import type { Form, FormSection, FormField as FormFieldType, FormFieldOption } from '@/lib/api/form';
 import { Button } from '@/components/ui/button';
@@ -26,6 +27,8 @@ interface DynamicFormProps {
 // Helper to build Zod schema dynamically
 const buildSchema = (sections: FormSection[]) => {
   let schemaShape = {};
+  const today = startOfDay(new Date()); // Get today's date at midnight
+
   sections.forEach(section => {
     section.fields.forEach(field => {
       let fieldSchema: z.ZodTypeAny = z.any(); // Default to any
@@ -55,7 +58,19 @@ const buildSchema = (sections: FormSection[]) => {
           }
           break;
         case 'date':
+           // Validate format YYYY-MM-DD first
            fieldSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, { message: field.validation?.message || 'Invalid date format (YYYY-MM-DD)'});
+           // Add refinement to check if the date is in the past (less than today)
+           fieldSchema = fieldSchema.refine(dateStr => {
+              try {
+                const inputDate = new Date(dateStr);
+                 // Add timezone offset to avoid issues across different timezones
+                const adjustedInputDate = new Date(inputDate.getTime() + inputDate.getTimezoneOffset() * 60000);
+                return !isNaN(adjustedInputDate.getTime()) && adjustedInputDate < today;
+              } catch (e) {
+                return false; // Invalid date string
+              }
+           }, { message: field.validation?.message || `${field.label} must be a date before today` });
            break;
         case 'dropdown':
         case 'radio':
@@ -82,10 +97,14 @@ const buildSchema = (sections: FormSection[]) => {
       // Add required validation if not checkbox (checkbox handles required differently)
       if (field.required && field.type !== 'checkbox') {
         if (fieldSchema instanceof z.ZodString) {
-          fieldSchema = fieldSchema.min(1, { message: field.validation?.message || `${field.label} is required` });
+          // Check if the string schema is already refined (like date) or has min length 1
+           // Avoid adding min(1) if already handled by regex or other minLength
+           // This check might be too simple, refine if needed
+           if (!(fieldSchema as any)._def.checks?.some(c => c.kind === 'min' && c.value === 1) && !(fieldSchema as any)._def.checks?.some(c => c.kind === 'regex')) {
+             fieldSchema = fieldSchema.min(1, { message: field.validation?.message || `${field.label} is required` });
+            }
         } else {
-           // For non-string types that are required (though less common in this spec)
-           // This might need adjustment based on actual non-string required types
+           // For non-string types that are required
           fieldSchema = fieldSchema.refine(val => val !== null && val !== undefined && val !== '', {
                message: field.validation?.message || `${field.label} is required`,
             });
@@ -148,6 +167,11 @@ export function DynamicForm({ formStructure }: DynamicFormProps) {
     } else if (!isValid) {
         console.log("Section invalid, cannot proceed.", form.formState.errors);
         // Errors should automatically display due to RHF state
+         toast({
+            title: "Validation Error",
+            description: "Please fix the errors in the current section before proceeding.",
+            variant: "destructive",
+        });
     }
   };
 
@@ -161,31 +185,62 @@ export function DynamicForm({ formStructure }: DynamicFormProps) {
     }
   };
 
-  const onSubmit = (data: z.infer<typeof validationSchema>) => {
-     // Final validation is implicitly handled by react-hook-form's handleSubmit
-     console.log('Form submitted successfully!');
-     console.log('Collected Form Data:', data);
+ const onSubmit = async (data: z.infer<typeof validationSchema>) => {
+    // Trigger validation for the entire form one last time
+    const allFields = formStructure.sections.flatMap(s => s.fields.map(f => f.fieldId)) as (keyof z.infer<typeof validationSchema>)[];
+    const isFormValid = await form.trigger(allFields);
 
-     // Show success toast
-     toast({
-        title: "Success!",
-        description: "Form submitted successfully!",
-        variant: "default", // or 'success' if you have that variant
-     });
-
-     // Reset the form fields to their default values
-     form.reset(generateDefaultValues());
-
-     // Reset to the first section
-     setCurrentSectionIndex(0);
-
-      // Scroll to the top of the page/form
-      if (formRef.current) {
-        formRef.current.scrollIntoView({ behavior: 'smooth', block: 'start' });
-      } else {
-         window.scrollTo({ top: 0, behavior: 'smooth' });
+    if (!isFormValid) {
+      console.log('Final validation failed. Errors:', form.formState.errors);
+      toast({
+        title: "Submission Failed",
+        description: "Please fix the errors in the form.",
+        variant: "destructive",
+      });
+       // Find the first section with an error and navigate to it
+      let firstErrorSectionIndex = -1;
+      for (let i = 0; i < formStructure.sections.length; i++) {
+        const sectionFields = formStructure.sections[i].fields.map(f => f.fieldId);
+        const hasError = sectionFields.some(fieldId => !!form.formState.errors[fieldId]);
+        if (hasError) {
+          firstErrorSectionIndex = i;
+          break;
+        }
       }
+      if (firstErrorSectionIndex !== -1 && firstErrorSectionIndex !== currentSectionIndex) {
+         setCurrentSectionIndex(firstErrorSectionIndex);
+         if (formRef.current) {
+            formRef.current.scrollIntoView({ behavior: 'smooth' });
+         }
+      }
+      return; // Stop submission if validation fails
+    }
+
+    // If validation passes
+    console.log('Form submitted successfully!');
+    console.log('Collected Form Data:', data);
+
+    // Show success toast
+    toast({
+      title: "Success!",
+      description: "Form submitted successfully!",
+      variant: "default",
+    });
+
+    // Reset the form fields to their default values
+    form.reset(generateDefaultValues());
+
+    // Reset to the first section
+    setCurrentSectionIndex(0);
+
+    // Scroll to the top of the page/form
+    if (formRef.current) {
+      formRef.current.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    } else {
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
   };
+
 
    const renderField = (field: FormFieldType, control) => {
     const fieldName = field.fieldId as keyof z.infer<typeof validationSchema>; // Type assertion
@@ -205,7 +260,7 @@ export function DynamicForm({ formStructure }: DynamicFormProps) {
                 {field.type === 'email' && <Input type="email" id={field.fieldId} placeholder={field.placeholder} {...RHFfield} data-testid={field.dataTestId} />}
                 {field.type === 'tel' && <Input type="tel" id={field.fieldId} placeholder={field.placeholder} {...RHFfield} data-testid={field.dataTestId} />}
                 {field.type === 'textarea' && <Textarea id={field.fieldId} placeholder={field.placeholder} {...RHFfield} data-testid={field.dataTestId} />}
-                {field.type === 'date' && <Input type="date" id={field.fieldId} {...RHFfield} data-testid={field.dataTestId} />}
+                {field.type === 'date' && <Input type="date" id={field.fieldId} {...RHFfield} data-testid={field.dataTestId} max={format(new Date(), 'yyyy-MM-dd') /* Optionally set max date in input */} />}
                 {field.type === 'dropdown' && (
                   <Select onValueChange={RHFfield.onChange} value={RHFfield.value || ''} defaultValue={RHFfield.value || ''}>
                     <SelectTrigger id={field.fieldId} data-testid={field.dataTestId}>
@@ -293,8 +348,8 @@ export function DynamicForm({ formStructure }: DynamicFormProps) {
               </Button>
 
               {isLastSection ? (
-                // Use form.handleSubmit here for the submit button
-                <Button type="button" onClick={form.handleSubmit(onSubmit)} className="bg-accent hover:bg-accent/90">Submit</Button>
+                // Use a regular button, handle submit logic in its onClick
+                <Button type="button" onClick={onSubmit} className="bg-accent hover:bg-accent/90">Submit</Button>
               ) : (
                 <Button type="button" onClick={handleNext} className="bg-accent hover:bg-accent/90">
                   Next
@@ -307,5 +362,3 @@ export function DynamicForm({ formStructure }: DynamicFormProps) {
     </Card>
   );
 }
-
-    
